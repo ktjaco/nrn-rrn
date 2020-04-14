@@ -159,8 +159,8 @@ class Stage:
         """Generates intersection junction types."""
 
         logger.info("Importing roadseg geodataframe into PostGIS.")
-        self.dframes["roadseg"].postgis.to_postgis(con=self.engine, table_name="stage_{}".format(self.stage),
-                                                   geometry="LineString", if_exists="replace", index=False)
+        # self.dframes["roadseg"].postgis.to_postgis(con=self.engine, table_name="stage_{}".format(self.stage),
+        #                                            geometry="LineString", if_exists="replace", index=False)
 
         logger.info("Loading SQL yaml.")
         self.sql = helpers.load_yaml("sql.yaml")
@@ -168,7 +168,16 @@ class Stage:
         # source:
         # https://gis.stackexchange.com/questions/20835/identifying-road-intersections-using-postgis
         logger.info("Executing SQL injection for junction intersections.")
-        inter_filter = self.sql["intersections"]["query"].format(self.stage)
+        #inter_filter = self.sql["intersections"]["query"].format(self.stage)
+        subprocess.run("ogr2ogr -dialect sqlite "
+                       "-sql 'WITH inter AS (SELECT ST_Intersection(a.geom, b.geom) geom, Count(DISTINCT a.ROADSEGID) count FROM roadseg AS a, roadseg AS b WHERE ST_Touches(a.geom, b.geom) AND a.ROADSEGID != b.ROADSEGID GROUP BY ST_Intersection(a.geom, b.geom))"
+                       "SELECT geom AS geometry, count FROM inter WHERE COUNT >= 3;' "
+                       "../../data/interim/stage_2_temp.gpkg "
+                       "../../data/interim/nb.gpkg "
+                       "-nlt MULTIPOINT "
+                       "-nln int "
+                       "-overwrite", shell=True)
+        sys.exit(1)
 
         logger.info("Creating junction intersection geodataframe.")
         self.inter_gdf = gpd.GeoDataFrame.from_postgis(inter_filter, self.engine, geom_col="geometry")
