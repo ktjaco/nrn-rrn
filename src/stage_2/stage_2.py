@@ -3,6 +3,7 @@ import fiona
 import geopandas as gpd
 import logging
 import networkx as nx
+import numpy as np
 import os
 import pandas as pd
 import shutil
@@ -162,29 +163,63 @@ class Stage:
         # self.dframes["roadseg"].postgis.to_postgis(con=self.engine, table_name="stage_{}".format(self.stage),
         #                                            geometry="LineString", if_exists="replace", index=False)
 
-        logger.info("Loading SQL yaml.")
-        self.sql = helpers.load_yaml("sql.yaml")
+        # logger.info("Loading SQL yaml.")
+        # self.sql = helpers.load_yaml("sql.yaml")
 
-        # source:
-        # https://gis.stackexchange.com/questions/20835/identifying-road-intersections-using-postgis
-        logger.info("Executing SQL injection for junction intersections.")
-        #inter_filter = self.sql["intersections"]["query"].format(self.stage)
-        subprocess.run("ogr2ogr -dialect sqlite "
-                       "-sql 'WITH inter AS (SELECT ST_Intersection(a.geom, b.geom) geom, Count(DISTINCT a.ROADSEGID) count FROM roadseg AS a, roadseg AS b WHERE ST_Touches(a.geom, b.geom) AND a.ROADSEGID != b.ROADSEGID GROUP BY ST_Intersection(a.geom, b.geom))"
-                       "SELECT geom AS geometry, count FROM inter WHERE COUNT >= 3;' "
-                       "../../data/interim/stage_2_temp.gpkg "
-                       "../../data/interim/nb.gpkg "
-                       "-nlt MULTIPOINT "
-                       "-nln int "
-                       "-overwrite", shell=True)
+        temp_roadseg = self.dframes["roadseg"]
+
+        logger.info("Generating junction intersections.")
+        self.sjoin_inter_gdf = gpd.overlay(self.dframes["roadseg"], self.dframes["roadseg"],
+                                    how='intersection',
+                                    keep_geom_type=False)
+
+        print(self.sjoin_inter_gdf)
+
+        self.sjoin_inter_gdf = self.sjoin_inter_gdf.rename(columns={"uuid_1": "uuid"})
+
+        sjoin_gdf = gpd.sjoin(self.sjoin_inter_gdf, self.dframes["roadseg"], how='left', op='intersects')
+
+        print(sjoin_gdf)
+
+        sjoin_gdf = sjoin_gdf["uuid"].value_counts().to_frame()
+
+        sjoin_gdf["ids"] = sjoin_gdf.index
+
+        sjoin_gdf = sjoin_gdf.reset_index()
+
+        # sjoin_gdf = sjoin_gdf.rename(columns={"uuid": "count"})
+
+        sjoin_gdf = sjoin_gdf.drop(["index"], axis=1)
+
+
+
+
+        temp_roadseg = self.sjoin_inter_gdf.merge(sjoin_gdf, on="uuid")
+
+        print(type(temp_roadseg))
+        print(temp_roadseg)
+
+
+
+
+        #
+        # dfpivot = pd.pivot_table(dfsjoin, index='rownum', values='uuid', aggfunc=lambda x: len(x.unique()))
+        # print(dfpivot)
         sys.exit(1)
 
-        logger.info("Creating junction intersection geodataframe.")
-        self.inter_gdf = gpd.GeoDataFrame.from_postgis(inter_filter, self.engine, geom_col="geometry")
+        self.inter_gdf["point"] = self.inter_gdf.geom_type == "Point"
+
+        self.inter_gdf = self.inter_gdf[self.inter_gdf.point != False]
+
+        self.inter_gdf = self.inter_gdf.drop_duplicates(subset="geometry", keep="first")
+
+        # logger.info("Creating junction intersection geodataframe.")
+        # self.inter_gdf = gpd.GeoDataFrame.from_postgis(inter_filter, self.engine, geom_col="geometry")
 
         logger.info("Apply intersection junctype to junctions.")
         self.inter_gdf["junctype"] = "Intersection"
         self.inter_gdf.crs = self.dframes["roadseg"].crs
+        self.inter_gdf = self.inter_gdf[["junctype","geometry"]]
 
     def gen_ferry(self):
         """Generates ferry junctions with NetworkX."""
@@ -237,16 +272,16 @@ class Stage:
 
         # source:
         # https://gis.stackexchange.com/questions/311320/casting-geometry-to-multi-using-geopandas
-        self.junctions["geometry"] = [MultiPoint([feature]) if type(feature) == Point else feature for feature in
-                                      self.junctions["geometry"]]
-        self.ferry_gdf["geometry"] = [MultiPoint([feature]) if type(feature) == Point else feature for feature in
-                                      self.ferry_gdf["geometry"]]
+        # self.junctions["geometry"] = [MultiPoint([feature]) if type(feature) == Point else feature for feature in
+        #                               self.junctions["geometry"]]
+        # self.ferry_gdf["geometry"] = [MultiPoint([feature]) if type(feature) == Point else feature for feature in
+        #                               self.ferry_gdf["geometry"]]
 
-        logger.info("Importing merged junctions into PostGIS.")
-        self.junctions.postgis.to_postgis(con=self.engine, table_name='stage_{}_junc'.format(self.stage),
-                                          geometry='MULTIPOINT', if_exists='replace')
-        self.ferry_gdf.postgis.to_postgis(con=self.engine, table_name='stage_{}_ferry_junc'.format(self.stage),
-                                          geometry='MULTIPOINT', if_exists='replace')
+        # logger.info("Importing merged junctions into PostGIS.")
+        # self.junctions.postgis.to_postgis(con=self.engine, table_name='stage_{}_junc'.format(self.stage),
+        #                                   geometry='MULTIPOINT', if_exists='replace')
+        # self.ferry_gdf.postgis.to_postgis(con=self.engine, table_name='stage_{}_ferry_junc'.format(self.stage),
+        #                                   geometry='MULTIPOINT', if_exists='replace')
 
     def fix_junctype(self):
         """Fix junctype of junctions outside of administrative boundaries."""
@@ -270,11 +305,12 @@ class Stage:
         # Transform administrative boundary file to GeoPackage layer with crs EPSG:4617.
         logger.info("Transforming administrative boundary file.")
         try:
-            subprocess.run("ogr2ogr -f GPKG -where PRUID='{}' ../../data/raw/boundary.gpkg "
-                           "../../data/raw/boundary/lpr_000a16a_e.shp -t_srs EPSG:4617 -nlt MULTIPOLYGON -nln {} "
-                           "-lco overwrite=yes "
+            subprocess.run("ogr2ogr -f GPKG -sql \"SELECT * FROM lpr_000a16a_e WHERE PRUID='{}'\" "
+                           "../../data/raw/boundary.gpkg ../../data/raw/boundary/lpr_000a16a_e.shp "
+                           "-t_srs EPSG:4617 -nlt MULTIPOLYGON -nln {} -lco overwrite=yes "
                            .format({"ab": 48, "bc": 59, "mb": 46, "nb": 13, "nl": 10, "ns": 12, "nt": 61, "nu": 62,
-                                    "on": 35, "pe": 11, "qc": 24, "sk": 47, "yt": 60}[self.source], self.source))
+                                    "on": 35, "pe": 11, "qc": 24, "sk": 47, "yt": 60}[self.source], self.source),
+                           shell=True)
         except subprocess.CalledProcessError as e:
             logger.exception("Unable to transform data source to EPSG:4617.")
             logger.exception("ogr2ogr error: {}".format(e))
@@ -294,23 +330,59 @@ class Stage:
         bound_adm = gpd.read_file("../../data/raw/boundary.gpkg", layer=self.source)
         bound_adm.crs = self.dframes["roadseg"].crs
 
-        logger.info("Importing administrative boundary into PostGIS.")
-        bound_adm.postgis.to_postgis(con=self.engine, table_name="adm", if_exists="replace", geometry='MultiPolygon')
+        # logger.info("Importing administrative boundary into PostGIS.")
+        # bound_adm.postgis.to_postgis(con=self.engine, table_name="adm", if_exists="replace", geometry='MultiPolygon')
+        # attr_fix = self.sql["attributes"]["query"].format(self.stage)
 
-        attr_fix = self.sql["attributes"]["query"].format(self.stage)
+        # Reset the junctions index.
+        self.junctions = self.junctions.reset_index(drop=True)
 
-        logger.info("Testing for junction equality and altering attributes.")
-        self.attr_equality = gpd.GeoDataFrame.from_postgis(attr_fix, self.engine, geom_col="geom")
-        self.attr_equality = self.attr_equality.rename(columns={"geom": "geometry"}).set_geometry("geometry")
+        # Find junctions within provincial administrative boundaries.
+        self.junctions = gpd.sjoin(self.junctions, bound_adm, how='left')
+
+        # Alter junctype to NatProvTer for junctions outside provincial boundary.
+        self.junctions.loc[(self.junctions.index_right.isnull()), 'junctype'] = 'NatProvTer'
+
+        self.junctions = self.junctions.drop(["index_right"], axis=1)
+
+        exitnbr_gdf = self.dframes["roadseg"][self.dframes["roadseg"]["exitnbr"] != 'None']
+        exitnbr_gdf = exitnbr_gdf[["geometry","exitnbr"]]
+        self.junctions = gpd.sjoin(self.junctions, exitnbr_gdf, how='left', op='intersects')
+
+        structtype_gdf = self.dframes["roadseg"][self.dframes["roadseg"]["structtype"] != 'None']
+        structtype_gdf = structtype_gdf[["geometry", "structtype"]]
+        structtype_gdf = gpd.sjoin(self.junctions, structtype_gdf, how='left', op='intersects')
+
+        structtype_gdf.to_file("/tmp/struct.gpkg", driver="GPKG")
+        sys.exit(1)
+
+        self.junctions = self.junctions.drop(["exitnbr_left",
+                                              "PRUID",
+                                              "PRNAME",
+                                              "PRENAME",
+                                              "PRFNAME",
+                                              "PREABBR",
+                                              "PRFABBR",
+                                              "index_right"], axis=1)
+
+        self.junctions = self.junctions.rename(columns={"exitnbr_right": "exitnbr"})
+
+        self.junctions = self.junctions.drop_duplicates(subset="geometry", keep="first")
+
+        # self.junctions.to_file("/tmp/int.gpkg", driver="GPKG")
+
+        # logger.info("Testing for junction equality and altering attributes.")
+        # self.attr_equality = gpd.GeoDataFrame.from_postgis(attr_fix, self.engine, geom_col="geom")
+        # self.attr_equality = self.attr_equality.rename(columns={"geom": "geometry"}).set_geometry("geometry")
 
     def gen_junctions(self):
         """Generate final dataset."""
 
         # Set standard field values.
-        self.attr_equality["uuid"] = [uuid.uuid4().hex for _ in range(len(self.attr_equality))]
-        self.attr_equality["credate"] = datetime.today().strftime("%Y%m%d")
-        self.attr_equality["datasetnam"] = self.dframes["roadseg"]["datasetnam"][0]
-        self.dframes["junction"] = self.attr_equality
+        self.junctions["uuid"] = [uuid.uuid4().hex for _ in range(len(self.junctions))]
+        self.junctions["credate"] = datetime.today().strftime("%Y%m%d")
+        self.junctions["datasetnam"] = self.dframes["roadseg"]["datasetnam"][0]
+        self.dframes["junction"] = self.junctions
 
         # Apply field domains.
         self.apply_domains()
@@ -356,14 +428,14 @@ class Stage:
         logger.info("Exporting junctions dataframe to GeoPackage layer.")
 
         # Export junctions dataframe to GeoPackage layer.
-        helpers.export_gpkg({"junction": self.dframes["junction"]}, self.data_path)
-
+        # helpers.export_gpkg({"junction": self.dframes["junction"]}, self.data_path)
+        self.dframes["junction"].to_file("/home/kent/PycharmProjects/nrn-rrn/data/interim/nb.gpkg", driver="GPKG", layer="junction")
     def execute(self):
         """Executes an NRN stage."""
 
-        self.create_db()
+        # self.create_db()
         self.load_gpkg()
-        self.gen_dead_end()
+        # self.gen_dead_end()
         self.gen_intersections()
         self.gen_ferry()
         self.compile_target_attributes()
