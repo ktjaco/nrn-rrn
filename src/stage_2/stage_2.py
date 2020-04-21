@@ -1,9 +1,7 @@
 import click
-import fiona
 import geopandas as gpd
 import logging
 import networkx as nx
-import numpy as np
 import os
 import pandas as pd
 import shutil
@@ -13,12 +11,6 @@ import urllib.request
 import uuid
 import zipfile
 from datetime import datetime
-from geopandas_postgis import PostGIS
-from psycopg2 import connect, extensions, sql
-from shapely.geometry.multipoint import MultiPoint
-from shapely.geometry.point import Point
-from sqlalchemy import *
-from sqlalchemy.engine.url import URL
 
 sys.path.insert(1, os.path.join(sys.path[0], ".."))
 import helpers
@@ -100,27 +92,25 @@ class Stage:
         self.inter_gdf.to_file("../../data/interim/stage_2_temp.gpkg", layer="junction", driver="GPKG")
         temp_roadseg.to_file("../../data/interim/stage_2_temp.gpkg", layer="roadseg", driver="GPKG")
 
-        logger.info("Calculating junction neighbours.")
-        try:
-            subprocess.run("ogr2ogr -progress -dialect sqlite -sql 'SELECT p.*, SUM(ST_Intersects(b.geom, p.geom)) AS "
-                           "touch FROM junction AS p, roadseg AS b GROUP BY p.fid HAVING touch <> 2' "
-                           "../../data/interim/stage_2_temp.gpkg ../../data/interim/stage_2_temp.gpkg "
-                           "--config OGR_SQLITE_CACHE 4096 --config OGR_SQLITE_SYNCHRONOUS OFF -nlt MULTIPOINT "
-                           "-nln intersections -lco GEOMETRY_NAME=geom -gt 100000 -overwrite "
-                           .format(self.source), shell=True)
-        except subprocess.CalledProcessError as e:
-            logger.exception("Unable to calculate junction neighbours.")
-            logger.exception("ogr2ogr error: {}".format(e))
-            sys.exit(1)
+        # logger.info("Calculating junction neighbours.")
+        # try:
+        #     subprocess.run("ogr2ogr -progress -dialect sqlite -sql 'SELECT p.*, SUM(ST_Intersects(b.geom, p.geom)) AS "
+        #                    "touch FROM junction AS p, roadseg AS b GROUP BY p.fid HAVING touch <> 2' "
+        #                    "../../data/interim/stage_2_temp.gpkg ../../data/interim/stage_2_temp.gpkg "
+        #                    "--config OGR_SQLITE_CACHE 4096 --config OGR_SQLITE_SYNCHRONOUS OFF -nlt MULTIPOINT "
+        #                    "-nln intersections -lco GEOMETRY_NAME=geom -gt 100000 -overwrite "
+        #                    .format(self.source), shell=True)
+        # except subprocess.CalledProcessError as e:
+        #     logger.exception("Unable to calculate junction neighbours.")
+        #     logger.exception("ogr2ogr error: {}".format(e))
+        #     sys.exit(1)
 
         self.inter_gdf = gpd.read_file("../../data/interim/stage_2_temp.gpkg", layer="intersections", driver="GPKG")
-
-        print(self.inter_gdf)
 
         logger.info("Apply intersection junctype to junctions.")
         self.inter_gdf["junctype"] = "Intersection"
         self.inter_gdf.crs = self.dframes["roadseg"].crs
-        self.inter_gdf = self.inter_gdf[["junctype","geometry"]]
+        self.inter_gdf = self.inter_gdf[["junctype", "geometry"]]
 
     def gen_ferry(self):
         """Generates ferry junctions with NetworkX."""
@@ -231,7 +221,7 @@ class Stage:
 
         # Filter segments with an exit number.
         exitnbr_gdf = self.dframes["roadseg"][self.dframes["roadseg"]["exitnbr"] != 'None']
-        exitnbr_gdf = exitnbr_gdf[["geometry","exitnbr"]]
+        exitnbr_gdf = exitnbr_gdf[["geometry", "exitnbr"]]
         self.junctions = gpd.sjoin(self.junctions, exitnbr_gdf, how='left', op='intersects')
         self.junctions = self.junctions.rename(columns={"exitnbr_right": "exitnbr"})
 
@@ -253,12 +243,13 @@ class Stage:
         self.junctions["uuid"] = [uuid.uuid4().hex for _ in range(len(self.junctions))]
         self.junctions["credate"] = datetime.today().strftime("%Y%m%d")
         self.junctions["datasetnam"] = self.dframes["roadseg"]["datasetnam"][0]
-        print(self.junctions)
+        self.junctions["credate"] = datetime.today().strftime("%Y%m%d")
+        self.junctions["metacover"] = "Complete"
+        self.junctions["acqtech"] = "Computed"
+        self.junctions["provider"] = "Federal"
+
         self.dframes["junction"] = self.junctions
-        print(self.dframes["junction"])
-        print(self.dframes["junction"].columns)
         self.dframes["junction"] = self.dframes["junction"].drop_duplicates(subset="geometry", keep="first")
-        print(self.dframes["junction"])
 
         # Apply field domains.
         self.apply_domains()
@@ -306,10 +297,10 @@ class Stage:
         # Export junctions dataframe to GeoPackage layer.
         # helpers.export_gpkg({"junction": self.dframes["junction"]}, self.data_path)
         self.dframes["junction"].to_file("../../data/interim/nb.gpkg", driver="GPKG", layer="junction")
+
     def execute(self):
         """Executes an NRN stage."""
 
-        # self.create_db()
         self.load_gpkg()
         self.gen_dead_end()
         self.gen_intersections()
