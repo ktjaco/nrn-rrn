@@ -2,15 +2,20 @@ import click
 import geopandas as gpd
 import logging
 import networkx as nx
+import numpy as np
 import os
 import pandas as pd
 import shutil
 import subprocess
 import sys
-import urllib.request
+import urllib
 import uuid
 import zipfile
 from datetime import datetime
+from operator import itemgetter
+from scipy.spatial import cKDTree
+from shapely.geometry import Point
+from itertools import chain
 
 sys.path.insert(1, os.path.join(sys.path[0], ".."))
 import helpers
@@ -31,6 +36,7 @@ class Stage:
     def __init__(self, source):
         self.stage = 2
         self.source = source.lower()
+        self.junctions_dframes = dict()
 
         # Configure and validate input data path.
         self.data_path = os.path.abspath("../../data/interim/{}.gpkg".format(self.source))
@@ -40,6 +46,31 @@ class Stage:
 
         # Compile database configuration variables.
         self.db_config = helpers.load_yaml(os.path.abspath("db_config.yaml"))
+
+    def apply_domains(self):
+        """Applies the field domains to each column in the target dataframes."""
+
+        logging.info("Applying field domains to junction.")
+        defaults = helpers.compile_default_values()
+        dtypes = helpers.compile_dtypes()
+        field = None
+
+        try:
+
+            for field, domains in defaults["junction"].items():
+                logger.info("Target field \"{}\": Applying domain.".format(field))
+
+                # Apply domains to dataframe.
+                default = defaults["junction"][field]
+                self.dframes["junction"][field] = self.dframes["junction"][field].map(
+                    lambda val: default if val == "" or pd.isna(val) else val)
+
+                # Force adjust data type.
+                self.dframes["junction"][field] = self.dframes["junction"][field].astype(dtypes["junction"][field])
+
+        except (AttributeError, KeyError, ValueError):
+            logger.exception("Invalid schema definition for table: junction, field: {}.".format(field))
+            sys.exit(1)
 
     def load_gpkg(self):
         """Loads input GeoPackage layers into dataframes."""
@@ -67,10 +98,10 @@ class Stage:
         dead_ends.add_nodes_from(dead_ends_filter)
 
         logger.info("Convert dead end graph to geodataframe.")
-        self.dead_end_gdf = helpers.nx_to_gdf(dead_ends, nodes=True, edges=False)
+        self.junctions_dframes["deadend"] = helpers.nx_to_gdf(dead_ends, nodes=True, edges=False)
 
         logger.info("Apply dead end junctype to junctions.")
-        self.dead_end_gdf["junctype"] = "Dead End"
+        self.junctions_dframes["deadend"]["junctype"] = "Dead End"
 
     def gen_intersections(self):
         """Generates intersection junction types."""
@@ -92,18 +123,18 @@ class Stage:
         self.inter_gdf.to_file("../../data/interim/stage_2_temp.gpkg", layer="junction", driver="GPKG")
         temp_roadseg.to_file("../../data/interim/stage_2_temp.gpkg", layer="roadseg", driver="GPKG")
 
-        # logger.info("Calculating junction neighbours.")
-        # try:
-        #     subprocess.run("ogr2ogr -progress -dialect sqlite -sql 'SELECT p.*, SUM(ST_Intersects(b.geom, p.geom)) AS "
-        #                    "touch FROM junction AS p, roadseg AS b GROUP BY p.fid HAVING touch <> 2' "
-        #                    "../../data/interim/stage_2_temp.gpkg ../../data/interim/stage_2_temp.gpkg "
-        #                    "--config OGR_SQLITE_CACHE 4096 --config OGR_SQLITE_SYNCHRONOUS OFF -nlt MULTIPOINT "
-        #                    "-nln intersections -lco GEOMETRY_NAME=geom -gt 100000 -overwrite "
-        #                    .format(self.source), shell=True)
-        # except subprocess.CalledProcessError as e:
-        #     logger.exception("Unable to calculate junction neighbours.")
-        #     logger.exception("ogr2ogr error: {}".format(e))
-        #     sys.exit(1)
+        logger.info("Calculating junction neighbours.")
+        try:
+            subprocess.run("ogr2ogr -progress -dialect sqlite -sql 'SELECT p.*, SUM(ST_Intersects(b.geom, p.geom)) AS "
+                           "touch FROM junction AS p, roadseg AS b GROUP BY p.fid HAVING touch <> 2' "
+                           "../../data/interim/stage_2_temp.gpkg ../../data/interim/stage_2_temp.gpkg "
+                           "--config OGR_SQLITE_CACHE 4096 --config OGR_SQLITE_SYNCHRONOUS OFF -nlt POINT "
+                           "-nln intersections -lco GEOMETRY_NAME=geom -gt 100000 -overwrite "
+                           .format(self.source), shell=True)
+        except subprocess.CalledProcessError as e:
+            logger.exception("Unable to calculate junction neighbours.")
+            logger.exception("ogr2ogr error: {}".format(e))
+            sys.exit(1)
 
         self.inter_gdf = gpd.read_file("../../data/interim/stage_2_temp.gpkg", layer="intersections", driver="GPKG")
 
@@ -113,16 +144,21 @@ class Stage:
         self.inter_gdf = self.inter_gdf[["junctype", "geometry"]]
 
     def gen_ferry(self):
-        """Generates ferry junctions with NetworkX."""
+        """Generates ferry junctions."""
 
-        logger.info("Convert ferryseg geodataframe to NetX graph.")
-        graph = helpers.gdf_to_nx(self.dframes["ferryseg"], endpoints_only=True)
+        if "ferryseg" in self.dframes:
 
-        logger.info("Convert Ferry graph to geodataframe.")
-        self.ferry_gdf = helpers.nx_to_gdf(graph, nodes=True, edges=False)
+            logger.info("Generating junction type: Ferry.")
+            df = self.dframes["ferryseg"].copy(deep=True)
 
-        logger.info("Apply Ferry junctype to junctions.")
-        self.ferry_gdf["junctype"] = "Ferry"
+            # Duplicate and concatenate ferryseg records, keeping the first and last points as separate records.
+            self.junctions_dframes["ferry"] = gpd.GeoDataFrame(pd.concat([
+                gpd.GeoDataFrame(df, geometry=df["geometry"].map(lambda g: Point(g.coords[0]))).copy(deep=True),
+                gpd.GeoDataFrame(df, geometry=df["geometry"].map(lambda g: Point(g.coords[-1]))).copy(deep=True)
+            ]))
+
+            # Populate junctype field.
+            self.junctions_dframes["ferry"]["junctype"] = "Ferry"
 
     def compile_target_attributes(self):
         """Compiles the target (distribution format) yaml file into a dictionary."""
@@ -147,22 +183,32 @@ class Stage:
 
     def gen_target_junction(self):
 
-        self.junctions = gpd.GeoDataFrame()
+        logger.info("Creating target dataframe.")
 
-        self.junctions = self.junctions.assign(**{field: pd.Series(dtype=dtype) for field, dtype in
-                                                  self.target_attributes["junction"]["fields"].items()})
+        self.junctions = gpd.GeoDataFrame().assign(**{field: pd.Series(dtype=dtype) for field, dtype in
+                                                      self.target_attributes["junction"]["fields"].items()})
 
     def combine(self):
         """Combine geodataframes."""
 
         logger.info("Combining ferry, dead end and intersection junctions.")
-        combine = gpd.GeoDataFrame(pd.concat([self.ferry_gdf, self.dead_end_gdf, self.inter_gdf], sort=False))
+
+        # Combine junction types.
+        combine = gpd.GeoDataFrame(pd.concat([self.junctions_dframes["ferry"],
+                                              self.junctions_dframes["deadend"],
+                                              self.inter_gdf], sort=False))
         combine = combine[['junctype', 'geometry']]
         self.junctions = self.junctions.append(combine)
         self.junctions.crs = self.dframes["roadseg"].crs
 
     def fix_junctype(self):
-        """Fix junctype of junctions outside of administrative boundaries."""
+        """
+        Fix junctype for:
+        1) NatProvTer: junctions outside of administrative boundaries.
+        2) Self-intersections.
+        """
+
+        logger.info("Classifying NatProvTer and exitnbr junctions.")
 
         # Download administrative boundary file.
         logger.info("Downloading administrative boundary file.")
@@ -239,11 +285,80 @@ class Stage:
     def gen_junctions(self):
         """Generate final dataset."""
 
+        logger.info("Generating final output dataset.")
+
+        def compute_connected_attribute(junction, attribute):
+            """
+            Computes the given attribute from connected features to the given junction dataframe.
+            Currently supported attributes: 'accuracy', 'exitnbr'.
+            """
+
+            # Validate input attribute.
+            if attribute not in ("accuracy", "exitnbr"):
+                logger.exception("Unsupported attribute provided: {}.".format(attribute))
+                sys.exit(1)
+
+            # Compile default field value.
+            default = helpers.compile_default_values()["junction"][attribute]
+
+            # Concatenate ferryseg and roadseg, if possible.
+            if "ferryseg" in self.dframes:
+                df = gpd.GeoDataFrame(pd.concat(itemgetter("ferryseg", "roadseg")(self.dframes), ignore_index=False,
+                                                sort=False))
+            else:
+                df = self.dframes["roadseg"].copy(deep=True)
+
+            # Generate kdtree.
+            tree = cKDTree(np.concatenate([np.array(geom.coords) for geom in df["geometry"]]))
+
+            # Compile indexes of segments at 0 meters distance from each junction. These represent connected segments.
+            connected_idx = junction["geometry"].map(lambda geom: list(chain(*tree.query_ball_point(geom.coords, r=0))))
+
+            # Construct a uuid series aligned to the series of segment points.
+            pts_uuid = np.concatenate([[uuid] * count for uuid, count in
+                                       df["geometry"].map(lambda geom: len(geom.coords)).iteritems()])
+
+            # Retrieve the uuid associated with the connected indexes.
+            connected_uuid = connected_idx.map(lambda index: itemgetter(*index)(pts_uuid))
+
+            # Compile the attribute for all segment uuids.
+            attribute_uuid = df[attribute].to_dict()
+
+            # Convert associated uuids to attributes.
+            # Return a series of the attribute default if an unsupported attribute was specified.
+
+            # Attribute: accuracy.
+            if attribute == "accuracy":
+                connected_attribute = connected_uuid.map(
+                    lambda uuid: max(itemgetter(*uuid)(attribute_uuid)) if isinstance(uuid, tuple) else
+                    itemgetter(uuid)(attribute_uuid))
+
+            # Attribute: exitnbr.
+            if attribute == "exitnbr":
+                connected_attribute = connected_uuid.map(
+                    lambda uuid: tuple(set(itemgetter(*uuid)(attribute_uuid))) if isinstance(uuid, tuple) else
+                    (itemgetter(uuid)(attribute_uuid),))
+
+                # Concatenate, sort, and remove invalid attribute tuples.
+                connected_attribute = connected_attribute.map(
+                    lambda vals: ", ".join(sorted([str(val) for val in vals if val != default and not pd.isna(val)])))
+
+            # Populate empty results with default.
+            connected_attribute = connected_attribute.map(lambda val: val if len(str(val)) else default)
+
+            return connected_attribute.copy(deep=True)
+
+        # Convert geometry from multipoint to point.
+        if self.junctions.geom_type.iloc[0] == "MultiPoint":
+            self.junctions["geometry"] = self.junctions["geometry"].map(lambda geom: geom[0])
+
         # Set standard field values.
         self.junctions["uuid"] = [uuid.uuid4().hex for _ in range(len(self.junctions))]
         self.junctions["credate"] = datetime.today().strftime("%Y%m%d")
         self.junctions["datasetnam"] = self.dframes["roadseg"]["datasetnam"][0]
         self.junctions["credate"] = datetime.today().strftime("%Y%m%d")
+        self.junctions["accuracy"] = compute_connected_attribute(self.junctions, "accuracy")
+        # self.junctions["exitnbr"] = compute_connected_attribute(self.junctions, "exitnbr")
         self.junctions["metacover"] = "Complete"
         self.junctions["acqtech"] = "Computed"
         self.junctions["provider"] = "Federal"
@@ -253,41 +368,6 @@ class Stage:
 
         # Apply field domains.
         self.apply_domains()
-
-        # Convert geometry from multipoint to point.
-        if self.dframes["junction"].geom_type[0] == "MultiPoint":
-            self.multipoint_to_point()
-
-    def apply_domains(self):
-        """Applies the field domains to each column in the target dataframes."""
-
-        logging.info("Applying field domains to junction.")
-        defaults = helpers.compile_default_values()
-        dtypes = helpers.compile_dtypes()
-        field = None
-
-        try:
-
-            for field, domains in defaults["junction"].items():
-
-                logger.info("Target field \"{}\": Applying domain.".format(field))
-
-                # Apply domains to dataframe.
-                default = defaults["junction"][field]
-                self.dframes["junction"][field] = self.dframes["junction"][field].map(
-                    lambda val: default if val == "" or pd.isna(val) else val)
-
-                # Force adjust data type.
-                self.dframes["junction"][field] = self.dframes["junction"][field].astype(dtypes["junction"][field])
-
-        except (AttributeError, KeyError, ValueError):
-            logger.exception("Invalid schema definition for table: junction, field: {}.".format(field))
-            sys.exit(1)
-
-    def multipoint_to_point(self):
-        """Converts junction geometry from multipoint to point."""
-
-        self.dframes["junction"]["geometry"] = self.dframes["junction"]["geometry"].map(lambda geom: geom[0])
 
     def export_gpkg(self):
         """Exports the junctions dataframe as a GeoPackage layer."""
