@@ -1,0 +1,31 @@
+coverage:
+  country: ca
+  province: sk
+  ISO3166:
+    alpha2: CA-SK
+    country: Canada
+    subdivision: Saskatchewan
+  website: https://www.isc.ca/Pages/default.aspx
+license:
+  url: https://www.isc.ca/About/Legal/Pages/default.aspx
+  text:
+language: en
+data:
+  filename: SURN2019/SURN_Feb_2019/TOLLPOINT.shp
+  layer:
+  driver: ESRI Shapefile
+  crs: "EPSG:26913"
+  spatial: True
+conform:
+  tollpoint:
+    nid: NID
+    datasetname: DATASETNAM
+    specvers: SPECVERS
+    accuracy: ACCURACY
+    acqtech: ACQTECH
+    provider: PROVIDER
+    credate: CREDATE
+    revdate: REVDATE
+    metacover: METACOVER
+    roadnid: ROADNID
+    tollpttype: TOLLPTTYPE
