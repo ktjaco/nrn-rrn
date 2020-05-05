@@ -18,12 +18,28 @@ data:
   spatial: True
 conform:
   addrange:
-    acqtech: ACQTECH
-    metacover: METACOVER
+    acqtech:
+      fields: ACQTECH
+      functions:
+        - function: direct
+          cast_type: int
+    metacover:
+      fields: METACOVER
+      functions:
+        - function: direct
+          cast_type: int
     credate: CREDATE
-    datasetnam: DATASETNAM
+    datasetnam:
+      fields: DATASETNAM
+      functions:
+      - function: direct
+        cast_type: int
     accuracy: ACCURACY
-    provider: PROVIDER
+    provider:
+      fields: PROVIDER
+      functions:
+      - function: direct
+        cast_type: int
     revdate: REVDATE
     specvers: SPECVERS
     l_altnanid:
@@ -44,18 +60,30 @@ conform:
     r_hnumsufl:
     l_hnumtypl:
     r_hnumtypl:
-    nid:
+    nid: NID
     l_offnanid:
     r_offnanid:
     l_rfsysind:
     r_rfsysind:
   roadseg:
-    acqtech: ACQTECH
-    metacover: METACOVER
+    acqtech:
+      fields: ACQTECH
+      functions:
+      - function: direct
+        cast_type: int
+    metacover:
+      fields: METACOVER
+      functions:
+      - function: direct
+        cast_type: int
     credate: CREDATE
     datasetnam: DATASETNAM
     accuracy: ACCURACY
-    provider: PROVIDER
+    provider:
+      fields: PROVIDER
+      functions:
+      - function: direct
+        cast_type: int
     revdate: REVDATE
     specvers: SPECVERS
     l_adddirfg:
@@ -65,7 +93,11 @@ conform:
     exitnbr: EXITNBR
     l_hnumf:
     r_hnumf:
-    roadclass: ROADCLASS
+    roadclass:
+      fields: ROADCLASS
+      functions:
+        - function: direct
+          cast_type: str
     l_hnuml:
     r_hnuml:
     nid: NID
@@ -74,8 +106,16 @@ conform:
     r_placenam: PLACENAME
     l_stname_c: POSTEDNAME
     r_stname_c: POSTEDNAME
-    pavsurf: PAVSURF
-    pavstatus: PAVSTATUS
+    pavsurf:
+      fields: PAVSURF
+      functions:
+        - function: direct
+          cast_type: int
+    pavstatus:
+      fields: PAVSTATUS
+      functions:
+        - function: direct
+          cast_type: int
     roadjuris:
     roadsegid:
     rtename1en: RTENAME1EN
@@ -95,26 +135,106 @@ conform:
     strunameen: STRUNAMEEN
     strunamefr: STRUNAMEFR
     structid: STRUCTID
-    structtype: STRUCTTYPE
-    trafficdir: TRAFFICDIR
-    unpavsurf: UNPAVSURF
+    structtype:
+      fields: STRUCTTYPE
+      functions:
+      - function: direct
+        cast_type: int
+    trafficdir: TRAVELDIR
+    unpavsurf:
+      fields: UNPAVSURF
+      functions:
+      - function: direct
+        cast_type: int
   strplaname:
-    acqtech: ACQTECH
-    metacover: METACOVER
+    acqtech:
+      fields: ACQTECH
+      functions:
+        - function: direct
+          cast_type: int
+    metacover:
+      fields: METACOVER
+      functions:
+        - function: direct
+          cast_type: int
     credate: CREDATE
-    datasetnam: DATASETNAM
+    datasetnam:
+      fields: DATASETNAM
+      functions:
+        - function: direct
+          cast_type: int
     accuracy: ACCURACY
-    provider: PROVIDER
+    provider:
+      fields: PROVIDER
+      functions:
+        - function: direct
+          cast_type: int
     revdate: REVDATE
     specvers: SPECVERS
-    dirprefix: DIRPREFIX
-    dirsuffix: DIRSUFFIX
+    dirprefix:
+      fields: POSTEDNAME
+      functions:
+        - function: regex_find
+          pattern: "\\b(domain)\\b(?!$)"
+          match_index: 0
+          group_index: 0
+    dirsuffix:
+      fields: POSTEDNAME
+      functions:
+        - function: copy_attribute_functions
+          attributes: [dirprefix]
+          modify_parameters:
+            regex_find:
+              strip_result: True
+        - function: regex_find
+          pattern: "(?<!^)\\b(domain)\\b"
+          match_index: -1
+          group_index: 0
+          sub_inplace:
+            pattern_from: "[-]"
+            pattern_to: " "
     muniquad:
-    nid:
+    nid: NID
     placename: PLACENAME
     placetype:
     province: "Saskatchewan"
     starticle:
-    namebody: POSTEDNAME
+      fields: POSTEDNAME
+      functions:
+        - function: regex_find
+          pattern: "\\b(domain)\\b"
+          match_index: 0
+          group_index: 0
+          sub_inplace:
+            pattern_from: "[-]"
+            pattern_to: " "
+    namebody:
+      fields: POSTEDNAME
+      functions:
+        - function: copy_attribute_functions
+          attributes: [starticle, dirsuffix, strtysuf]
+          modify_parameters:
+            regex_find:
+              strip_result: True
     strtypre:
+      fields: POSTEDNAME
+      functions:
+        - function: regex_find
+          pattern: "\\b(domain)\\b(?!$)"
+          match_index: 0
+          group_index: 0
     strtysuf:
+      fields: POSTEDNAME
+      functions:
+        - function: copy_attribute_functions
+          attributes: [strtypre]
+          modify_parameters:
+            regex_find:
+              strip_result: True
+        - function: regex_find
+          pattern: "(?<!^)\\b(domain)\\b"
+          match_index: -1
+          group_index: 0
+          sub_inplace:
+            pattern_from: "[-]"
+            pattern_to: " "

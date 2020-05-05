@@ -154,7 +154,8 @@ def export_gpkg(dataframes, output_path, empty_gpkg_path=os.path.abspath("../../
             if "geometry" in dir(df):
 
                 # Open GeoPackage.
-                with fiona.open(output_path, "w", overwrite=True, layer=table_name, driver="GPKG", crs=df.crs.to_wkt(),
+                # with fiona.open(output_path, "w", overwrite=True, layer=table_name, driver="GPKG", crs=df.crs.to_wkt(),
+                with fiona.open(output_path, "w", overwrite=True, layer=table_name, driver="GPKG", crs='epsg:4617',
                                 schema=gpd.io.file.infer_schema(df)) as gpkg:
 
                     # Write to GeoPackage.

@@ -19,13 +19,33 @@ data:
 conform:
   tollpoint:
     nid: NID
-    datasetname: DATASETNAM
+    datasetnam:
+      fields: DATASETNAM
+      functions:
+        - function: direct
+          cast_type: int
     specvers: SPECVERS
     accuracy: ACCURACY
-    acqtech: ACQTECH
-    provider: PROVIDER
+    acqtech:
+      fields: ACQTECH
+      functions:
+        - function: direct
+          cast_type: int
+    provider:
+      fields: PROVIDER
+      functions:
+        - function: direct
+          cast_type: int
     credate: CREDATE
     revdate: REVDATE
-    metacover: METACOVER
+    metacover:
+      fields: METACOVER
+      functions:
+        - function: direct
+          cast_type: int
     roadnid: ROADNID
-    tollpttype: TOLLPTTYPE
+    tollpttype:
+      fields: TOLLPTTYPE
+      functions:
+        - function: direct
+          cast_type: int

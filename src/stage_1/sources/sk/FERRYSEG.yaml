@@ -11,19 +11,35 @@ license:
   text:
 language: en
 data:
-  filename: SURN2019/SURN_Feb_2019/BLKPASSAGE.shp
+  filename: SURN2019/SURN_Feb_2019/FERRYSEG.shp
   layer:
   driver: ESRI Shapefile
   crs: "EPSG:26913"
   spatial: True
 conform:
   ferryseg:
-    acqtech: ACQTECH
-    metacover: METACOVER
+    acqtech:
+      fields: ACQTECH
+      functions:
+        - function: direct
+          cast_type: int
+    metacover:
+      fields: METACOVER
+      functions:
+        - function: direct
+          cast_type: int
     credate: CREDATE
-    datasetnam: DATASETNAM
+    datasetnam:
+      fields: DATASETNAM
+      functions:
+        - function: direct
+          cast_type: int
     accuracy: ACCURACY
-    provider: PROVIDER
+    provider:
+      fields: PROVIDER
+      functions:
+        - function: direct
+          cast_type: int
     revdate: REVDATE
     specvers: SPECVERS
     closing:
